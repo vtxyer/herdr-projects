@@ -1840,6 +1840,20 @@ fn a_failed_look_at_a_remote_agent_keeps_the_brief_checks_going() {
 }
 
 #[test]
+fn a_remote_brief_still_waiting_after_five_minutes_is_looked_for_once_per_tick() {
+    let answer = Rc::new(RefCell::new(Some("working".to_string())));
+    let (world, _project) = remote_brief_world(600, answer);
+    let ctx = world.ctx();
+    // An agent that slow is often blocked: a look every two seconds would be
+    // an ssh call every two seconds for as long as it stays so.
+    assert!(!ticker::brief_pass_for_test(&ctx));
+    assert_eq!(remote_agent_lists(&world), 0);
+    // Right after a tick it is looked for, not left to the machine poll.
+    assert!(ticker::brief_pass_after_tick_for_test(&ctx));
+    assert_eq!(remote_agent_lists(&world), 1);
+}
+
+#[test]
 fn a_remote_thread_without_a_repo_is_refused() {
     let world = World::new();
     world.project("demo", "a.sock");

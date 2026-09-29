@@ -22,8 +22,8 @@ use crate::{inbox, thread};
 pub const TICK: Duration = Duration::from_secs(15);
 /// How often a brief is checked for between ticks after an agent start.
 const BRIEF_POLL: Duration = Duration::from_secs(2);
-/// How long after its start a thread on another machine is looked at between
-/// that machine's polls.
+/// How long after its start a thread on another machine is looked at at every
+/// brief check; after that, once per tick.
 const REMOTE_BRIEF_WINDOW_SECS: i64 = 300;
 /// How many agents one remote pass may start on one machine. More than one:
 /// threads started together would otherwise launch a whole machine poll
@@ -282,13 +282,15 @@ pub fn run(ctx: &Ctx) -> Result<()> {
         let wake = Instant::now() + TICK;
         // Cheap when no brief waits: it reads the thread records only.
         let mut briefs = true;
+        let mut after_tick = true;
         let mut next_brief = Instant::now() + BRIEF_POLL;
         while Instant::now() < wake {
             if stop_path(root).exists() {
                 break;
             }
             if briefs && Instant::now() >= next_brief {
-                briefs = brief_pass(ctx, &log);
+                briefs = brief_pass(ctx, &log, after_tick);
+                after_tick = false;
                 next_brief = Instant::now() + BRIEF_POLL;
             }
             std::thread::sleep(Duration::from_millis(500));
@@ -355,8 +357,10 @@ pub fn tick(ctx: &Ctx, log: &Log, memory: &mut Memory) -> bool {
 /// as soon as the agent is ready and settled, instead of a whole tick (or,
 /// on another machine, a whole machine poll) later. An agent sitting idle
 /// that long looks stalled, and coordinators stepped in with `thread brief`.
-/// Returns whether a started thread still waits for its brief.
-pub fn brief_pass(ctx: &Ctx, log: &Log) -> bool {
+/// `after_tick`: the first check after a tick, which also looks at threads on
+/// another machine started longer ago. Returns whether a started thread
+/// still waits for its brief.
+pub fn brief_pass(ctx: &Ctx, log: &Log, after_tick: bool) -> bool {
     let mut waiting = false;
     let mut lists: std::collections::BTreeMap<String, Option<Vec<Agent>>> = Default::default();
     for slug in project::list_slugs(&ctx.root) {
@@ -367,11 +371,12 @@ pub fn brief_pass(ctx: &Ctx, log: &Log) -> bool {
             continue;
         }
         let now = jiff::Timestamp::now();
-        // Another machine costs an ssh call per look: only while its agent is new.
+        // Another machine costs an ssh call per look: at every check only
+        // while its agent is new.
         let pending: Vec<thread::Thread> = thread::list(&project)
             .into_iter()
             .filter(|t| t.status == thread::Status::Open && t.prompt_pending && !t.brief_stuck && t.launch_attempts > 0)
-            .filter(|t| !t.is_remote() || !t.launched_at.is_empty() && thread::seconds_since(&t.launched_at, now) < REMOTE_BRIEF_WINDOW_SECS)
+            .filter(|t| !t.is_remote() || !t.launched_at.is_empty() && (after_tick || thread::seconds_since(&t.launched_at, now) < REMOTE_BRIEF_WINDOW_SECS))
             .collect();
         let Some(record) = project.coordinator().filter(|r| !pending.is_empty() && !r.socket.is_empty()) else {
             continue;
@@ -571,7 +576,13 @@ pub fn tick_for_test(ctx: &Ctx, memory: &mut Memory) -> bool {
 #[cfg(test)]
 pub fn brief_pass_for_test(ctx: &Ctx) -> bool {
     let dir = std::env::temp_dir().join(format!("hp-test-log-{}", std::process::id()));
-    brief_pass(ctx, &Log { path: dir })
+    brief_pass(ctx, &Log { path: dir }, false)
+}
+
+#[cfg(test)]
+pub fn brief_pass_after_tick_for_test(ctx: &Ctx) -> bool {
+    let dir = std::env::temp_dir().join(format!("hp-test-log-{}", std::process::id()));
+    brief_pass(ctx, &Log { path: dir }, true)
 }
 
 /// What the cheap pass saw, handed to the slow pass so herdr is asked once.
