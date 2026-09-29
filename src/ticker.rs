@@ -1022,7 +1022,7 @@ fn tick_slow(ctx: &Ctx, project: &Project, seen: &Seen, memory: &mut Memory) -> 
     machines.sort();
     machines.dedup();
     for machine in machines {
-        if !memory.machine_is_due(&machine) {
+        if !memory.machine_is_due(&project.slug, &machine) {
             continue;
         }
         let threads: Vec<thread::Thread> = remote_threads.iter().filter(|t| t.machine == machine).cloned().collect();

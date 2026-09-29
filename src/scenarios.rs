@@ -1854,6 +1854,31 @@ fn a_remote_brief_still_waiting_after_five_minutes_is_looked_for_once_per_tick()
 }
 
 #[test]
+fn two_projects_with_threads_on_one_machine_are_both_polled() {
+    let (world, first) = remote_world();
+    let world = World { runner: FakeRunner::new(), ..world };
+    let second = world.project("other", "b.sock");
+    world.thread(&second, Path::new("/home/me/wt2"), |t| t.machine = "box".into());
+    world.runner.on("machine list --json", ok(r#"[{"id":"1","label":"box","target":"me@box"}]"#));
+    world.runner.on_fn(|c| is_machine_call(c) && c.display().contains("agent list"), |_| Ok(ok(r#"{"result":{"agents":[]}}"#)));
+    world.runner.on_fn(|c| is_machine_call(c) && c.display().contains("pane list"), |_| Ok(ok(r#"{"result":{"panes":[]}}"#)));
+    world.runner.on("ssh", ok(""));
+    world.runner.on("agent list", ok(r#"{"result":{"agents":[]}}"#));
+    world.runner.on("pane list", ok(r#"{"result":{"panes":[]}}"#));
+    world.runner.on("report-metadata", ok("{}"));
+    let ctx = world.ctx();
+    let mut memory = Memory::new(&ctx);
+    for tick in [1, 1 + crate::steps::REMOTE_EVERY_TICKS] {
+        memory.tick = tick;
+        for project in [&first, &second] {
+            ticker::tick_project_with(&ctx, project, &mut memory).unwrap();
+        }
+    }
+    // Each project's own threads on "box", at each poll.
+    assert_eq!(remote_agent_lists(&world), 4);
+}
+
+#[test]
 fn a_remote_thread_without_a_repo_is_refused() {
     let world = World::new();
     world.project("demo", "a.sock");

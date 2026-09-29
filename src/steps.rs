@@ -103,7 +103,9 @@ pub struct MachineMemory {
     /// Not polled again before this tick: one sleeping machine must not slow
     /// the other projects' ticks.
     pub skip_until_tick: u64,
-    pub last_poll_tick: u64,
+    /// Each project's last poll of the machine, by slug: every project asks
+    /// for its own threads there.
+    pub last_poll_tick: BTreeMap<String, u64>,
 }
 
 /// What the ticker process remembers between ticks (not persisted).
@@ -136,14 +138,15 @@ impl Memory {
         }
     }
 
-    /// Remote machines are polled every fourth tick (about a minute), and not
-    /// at all for eight ticks after a failure.
-    pub fn machine_is_due(&mut self, machine: &str) -> bool {
+    /// Remote machines are polled for each project every fourth tick (about
+    /// a minute), and not at all for eight ticks after a failure.
+    pub fn machine_is_due(&mut self, slug: &str, machine: &str) -> bool {
         let tick = self.tick;
         let entry = self.machines.entry(machine.to_string()).or_default();
-        let due = tick >= entry.skip_until_tick && (entry.last_poll_tick == 0 || tick >= entry.last_poll_tick + REMOTE_EVERY_TICKS);
+        let last = entry.last_poll_tick.get(slug).copied().unwrap_or(0);
+        let due = tick >= entry.skip_until_tick && (last == 0 || tick >= last + REMOTE_EVERY_TICKS);
         if due {
-            entry.last_poll_tick = tick;
+            entry.last_poll_tick.insert(slug.to_string(), tick);
         }
         due
     }
