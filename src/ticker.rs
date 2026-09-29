@@ -608,12 +608,27 @@ struct Pass {
     recorded_panes: usize,
     missing_panes: usize,
     error: Option<anyhow::Error>,
+    /// The sidebar tokens of every live pane, sent by the caller.
+    reports: Vec<PaneReport>,
+}
+
+/// One thread pane's sidebar tokens.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaneReport {
+    pane: String,
+    display: String,
+    group: thread::Group,
+}
+
+impl PaneReport {
+    fn send(&self, herdr: &Herdr, slug: &str) {
+        crate::sidebar::report_pane(herdr, &self.pane, &self.display, slug, self.group);
+    }
 }
 
 fn thread_pass(project: &Project, herdr: &Herdr, socket: &str, threads: &[thread::Thread], agents: &[Agent], panes: &[Pane], hashes: Option<&std::collections::BTreeMap<String, String>>) -> Result<Pass> {
-    let slug = &project.slug;
     let now = jiff::Timestamp::now();
-    let mut pass = Pass { transitions: Vec::new(), recorded_panes: 0, missing_panes: 0, error: None };
+    let mut pass = Pass { transitions: Vec::new(), recorded_panes: 0, missing_panes: 0, error: None, reports: Vec::new() };
     for t in threads {
         if t.status == thread::Status::Starting {
             if thread::seconds_since(&t.created, now) >= thread::STARTING_TIMEOUT_SECS {
@@ -707,7 +722,7 @@ fn thread_pass(project: &Project, herdr: &Herdr, socket: &str, threads: &[thread
             })?;
         }
         if live.pane_exists {
-            crate::sidebar::report_pane(herdr, &t.pane_id, &crate::sidebar::thread_display(t), slug, group);
+            pass.reports.push(PaneReport { pane: t.pane_id.clone(), display: crate::sidebar::thread_display(t), group });
         }
     }
     Ok(pass)
@@ -862,6 +877,9 @@ fn tick_cheap(ctx: &Ctx, project: &Project, sessions: &mut Sessions) -> Result<O
     }
 
     let pass = thread_pass(project, &herdr, &record.socket, &open_threads(project, false), &agents, &panes, None)?;
+    for report in &pass.reports {
+        report.send(&herdr, slug);
+    }
     // The project's part of the sidebar grouping.
     sessions.parts.entry(record.socket.clone()).or_default().insert(slug.clone(), part(ctx, project, &record, &coordinators, &agents, false));
     // Progress records of panes that are gone are dropped; a new agent in a
@@ -906,7 +924,7 @@ fn tick_cheap(ctx: &Ctx, project: &Project, sessions: &mut Sessions) -> Result<O
 /// pass, copies and launches as for local threads, with its own allowance of
 /// one start per tick. If the machine cannot be
 /// reached nothing is read: no state, no group change, no copy, no inbox item.
-fn remote_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, machine: &str, threads: &[thread::Thread], copy_notes: &mut std::collections::BTreeMap<String, Vec<String>>, errors: &mut Vec<anyhow::Error>) -> Result<Vec<Transition>, String> {
+fn remote_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, machine: &str, threads: &[thread::Thread], copy_notes: &mut std::collections::BTreeMap<String, Vec<String>>, errors: &mut Vec<anyhow::Error>) -> Result<Pass, String> {
     let remote = herdr.on_machine(machine);
     let agents = remote.agent_list().map_err(|e| e.to_string())?;
     let panes = remote.pane_list().map_err(|e| e.to_string())?;
@@ -914,8 +932,8 @@ fn remote_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, machine: &str, threa
     let dirs: Vec<(String, String)> = threads.iter().filter(|t| !t.thread_dir.is_empty()).map(|t| (t.id.clone(), t.thread_dir.clone())).collect();
     let hashes = crate::remote::report_hashes(ctx.runner, &target, &dirs).map_err(|e| format!("{e:#}"))?;
 
-    let pass = thread_pass(project, &remote, "", threads, &agents, &panes, Some(&hashes)).map_err(|e| format!("{e:#}"))?;
-    errors.extend(pass.error);
+    let mut pass = thread_pass(project, &remote, "", threads, &agents, &panes, Some(&hashes)).map_err(|e| format!("{e:#}"))?;
+    errors.extend(pass.error.take());
 
     for t in threads {
         let Some(hash) = hashes.get(&t.id).filter(|h| **h != t.report_hash) else {
@@ -937,7 +955,7 @@ fn remote_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, machine: &str, threa
         }
     }
     launch_pass(ctx, project, herdr, threads, &agents, &panes, &mut true, errors);
-    Ok(pass.transitions)
+    Ok(pass)
 }
 
 /// Copies and launches, remote machines, then inbox items, pull requests,
@@ -989,7 +1007,17 @@ fn tick_slow(ctx: &Ctx, project: &Project, seen: &Seen, memory: &mut Memory) -> 
         let outcome = remote_pass(ctx, project, &herdr, &machine, &threads, &mut copy_notes, &mut errors);
         let event = memory.record_machine(&machine, outcome.as_ref().err().map(String::as_str), now);
         match outcome {
-            Ok(found) => transitions.extend(found),
+            Ok(pass) => {
+                // Each report is an ssh round trip: an unchanged pane is sent
+                // again only to keep its TTL alive.
+                let remote = herdr.on_machine(&machine);
+                for report in &pass.reports {
+                    if memory.remote_panes.due((machine.clone(), report.pane.clone()), &(project.slug.clone(), report.clone())) {
+                        report.send(&remote, &project.slug);
+                    }
+                }
+                transitions.extend(pass.transitions);
+            }
             Err(error) => errors.push(anyhow::anyhow!("{machine}: unreachable this tick: {error}")),
         }
         errors.extend(steps::write_machine_outage(project, &machine, event, memory).err());

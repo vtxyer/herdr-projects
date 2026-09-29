@@ -1745,6 +1745,44 @@ fn a_remote_thread_blocked_at_a_poll_is_waiting_on_you_at_once() {
 }
 
 #[test]
+fn a_remote_pane_gets_its_tokens_again_only_when_they_change() {
+    let (world, project) = remote_world();
+    let state = Rc::new(RefCell::new("working"));
+    let current = state.clone();
+    let scripted = World { runner: FakeRunner::new(), ..world };
+    scripted.runner.on_fn(
+        |cmd| is_machine_call(cmd) && cmd.display().contains("agent list"),
+        move |_| Ok(ok(&format!(r#"{{"result":{{"agents":[{}]}}}}"#, agent_json("w2", "w2:t1", "w2:p1", "/home/me/wt", "hp-demo-t-0001", &current.borrow())))),
+    );
+    scripted.runner.on_fn(
+        |cmd| is_machine_call(cmd) && cmd.display().contains("pane list"),
+        |_| Ok(ok(&format!(r#"{{"result":{{"panes":[{}]}}}}"#, pane_json("w2", "w2:t1", "w2:p1", "/home/me/wt")))),
+    );
+    scripted.runner.on_fn(is_machine_call, |_| Ok(ok(r#"{"result":{}}"#)));
+    scripted.runner.on("machine list --json", ok(r#"[{"id":"1","label":"box","target":"me@box"}]"#));
+    scripted.runner.on("ssh", ok("t-0001 -\n"));
+    scripted.runner.on("agent list", ok(r#"{"result":{"agents":[]}}"#));
+    let panes = format!(r#"{{"result":{{"panes":[{}]}}}}"#, scripted.coordinator_pane(&project));
+    scripted.runner.on("pane list", ok(&panes));
+    scripted.runner.on("report-metadata", ok("{}"));
+    let ctx = scripted.ctx();
+    let mut memory = Memory::new(&ctx);
+    let remote_tokens = |w: &World| w.runner.calls.borrow().iter().filter(|c| is_machine_call(c) && c.display().contains("report-metadata w2:p1")).count();
+
+    for tick in [1, 1 + crate::steps::REMOTE_EVERY_TICKS] {
+        memory.tick = tick;
+        ticker::tick_project_with(&ctx, &project, &mut memory).unwrap();
+    }
+    // Each such call costs an ssh round trip: an unchanged pane is not sent again.
+    assert_eq!(remote_tokens(&scripted), 1);
+
+    *state.borrow_mut() = "blocked";
+    memory.tick += crate::steps::REMOTE_EVERY_TICKS;
+    ticker::tick_project_with(&ctx, &project, &mut memory).unwrap();
+    assert_eq!(remote_tokens(&scripted), 2, "a new group is a new rank");
+}
+
+#[test]
 fn a_remote_thread_without_a_repo_is_refused() {
     let world = World::new();
     world.project("demo", "a.sock");

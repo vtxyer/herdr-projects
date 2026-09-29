@@ -117,6 +117,8 @@ pub struct Memory {
     pub machines: BTreeMap<String, MachineMemory>,
     /// The sidebar grouping tokens last sent.
     pub grouping: crate::grouping::Sent,
+    /// The sidebar tokens last sent to each remote thread pane, by machine.
+    pub remote_panes: crate::grouping::Sent<(String, crate::ticker::PaneReport)>,
 }
 
 impl Memory {
@@ -130,6 +132,7 @@ impl Memory {
             tick: 0,
             machines: BTreeMap::new(),
             grouping: Default::default(),
+            remote_panes: Default::default(),
         }
     }
 

@@ -358,6 +358,19 @@ mod tests {
     }
 
     #[test]
+    fn an_unchanged_value_is_sent_again_well_before_its_ttl_runs_out() {
+        let mut sent: Sent<u8> = Sent::default();
+        let key = || ("box".to_string(), "w2:p1".to_string());
+        assert!(sent.due(key(), &1));
+        assert!(!sent.due(key(), &1));
+        assert!(sent.due(key(), &2), "a change is sent at once");
+        // A third of the TTL: a poll or two may pass before the next look.
+        assert!(RESEND.as_millis() * 3 <= u128::from(crate::sidebar::TOKEN_TTL_MS));
+        sent.0.get_mut(&key()).unwrap().1 -= RESEND;
+        assert!(sent.due(key(), &2));
+    }
+
+    #[test]
     fn no_project_means_no_layout() {
         assert_eq!(plan(&Parts::new(), &[agent("x")], &[space("w", "", false)]), Plan::default());
     }
