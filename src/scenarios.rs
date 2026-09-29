@@ -1879,6 +1879,57 @@ fn two_projects_with_threads_on_one_machine_are_both_polled() {
 }
 
 #[test]
+fn a_machine_is_polled_every_tick_while_a_thread_there_waits_for_its_agent() {
+    let (world, project) = remote_world();
+    let world = World { runner: FakeRunner::new(), ..world };
+    world.runner.on("machine list --json", ok(r#"[{"id":"1","label":"box","target":"me@box"}]"#));
+    world.runner.on_fn(|c| is_machine_call(c) && c.display().contains("agent list"), |_| Ok(ok(r#"{"result":{"agents":[]}}"#)));
+    world.runner.on_fn(|c| is_machine_call(c) && c.display().contains("pane list"), |_| Ok(ok(r#"{"result":{"panes":[]}}"#)));
+    world.runner.on("ssh", ok(""));
+    world.runner.on("agent list", ok(r#"{"result":{"agents":[]}}"#));
+    world.runner.on("pane list", ok(r#"{"result":{"panes":[]}}"#));
+    world.runner.on("report-metadata", ok("{}"));
+    let ctx = world.ctx();
+    let mut memory = Memory::new(&ctx);
+    let tick = |memory: &mut Memory, at: u64| {
+        memory.tick = at;
+        ticker::tick_project_with(&ctx, &project, memory).unwrap();
+    };
+    // Nothing waits: once a minute.
+    tick(&mut memory, 1);
+    tick(&mut memory, 2);
+    assert_eq!(remote_agent_lists(&world), 1);
+    // A new thread there: every tick until its agent has its brief.
+    let fresh = thread::allocate(&project, |t| {
+        t.status = Status::Starting;
+        t.machine = "box".into();
+    })
+    .unwrap();
+    tick(&mut memory, 3);
+    assert_eq!(remote_agent_lists(&world), 2);
+    thread::update(&project, &fresh.id, |t| {
+        t.status = Status::Open;
+        t.prompt_pending = true;
+    })
+    .unwrap();
+    tick(&mut memory, 4);
+    assert_eq!(remote_agent_lists(&world), 3);
+    // Started long ago and still without its brief (blocked, say): once a
+    // minute again, like any other thread.
+    let long_ago = (jiff::Timestamp::now() - jiff::SignedDuration::from_secs(600)).to_string();
+    thread::update(&project, &fresh.id, |t| {
+        t.launch_attempts = 1;
+        t.launched_at = long_ago;
+    })
+    .unwrap();
+    tick(&mut memory, 5);
+    tick(&mut memory, 6);
+    assert_eq!(remote_agent_lists(&world), 3);
+    tick(&mut memory, 4 + crate::steps::REMOTE_EVERY_TICKS);
+    assert_eq!(remote_agent_lists(&world), 4);
+}
+
+#[test]
 fn a_remote_thread_without_a_repo_is_refused() {
     let world = World::new();
     world.project("demo", "a.sock");

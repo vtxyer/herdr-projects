@@ -139,12 +139,14 @@ impl Memory {
     }
 
     /// Remote machines are polled for each project every fourth tick (about
-    /// a minute), and not at all for eight ticks after a failure.
-    pub fn machine_is_due(&mut self, slug: &str, machine: &str) -> bool {
+    /// a minute), every tick while `soon` (a thread there waits for its agent
+    /// or brief), and not at all for eight ticks after a failure.
+    pub fn machine_is_due(&mut self, slug: &str, machine: &str, soon: bool) -> bool {
         let tick = self.tick;
         let entry = self.machines.entry(machine.to_string()).or_default();
         let last = entry.last_poll_tick.get(slug).copied().unwrap_or(0);
-        let due = tick >= entry.skip_until_tick && (last == 0 || tick >= last + REMOTE_EVERY_TICKS);
+        let every = if soon { 1 } else { REMOTE_EVERY_TICKS };
+        let due = tick >= entry.skip_until_tick && (last == 0 || tick >= last + every);
         if due {
             entry.last_poll_tick.insert(slug.to_string(), tick);
         }

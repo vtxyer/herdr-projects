@@ -844,6 +844,16 @@ fn launch_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, threads: &[thread::T
     }
 }
 
+/// A thread being set up, or whose agent waits to be started or briefed,
+/// recently enough that it is not simply blocked: worth a look every tick.
+fn starting_up(t: &thread::Thread, now: jiff::Timestamp) -> bool {
+    match t.status {
+        thread::Status::Starting => true,
+        thread::Status::Open => t.prompt_pending && !t.brief_stuck && (t.launched_at.is_empty() || thread::seconds_since(&t.launched_at, now) < REMOTE_BRIEF_WINDOW_SECS),
+        _ => false,
+    }
+}
+
 fn open_threads(project: &Project, remote: bool) -> Vec<thread::Thread> {
     thread::list(project)
         .into_iter()
@@ -1014,7 +1024,8 @@ fn tick_slow(ctx: &Ctx, project: &Project, seen: &Seen, memory: &mut Memory) -> 
     }
     launch_pass(ctx, project, &herdr, &local, &seen.agents, &seen.panes, &mut starts_left, &mut errors);
 
-    // Remote threads, one machine at a time, every fourth tick.
+    // Remote threads, one machine at a time, every fourth tick or while one
+    // is starting up.
     let mut state = steps::load_state(project);
     let before = state.clone();
     let remote_threads = open_threads(project, true);
@@ -1022,10 +1033,10 @@ fn tick_slow(ctx: &Ctx, project: &Project, seen: &Seen, memory: &mut Memory) -> 
     machines.sort();
     machines.dedup();
     for machine in machines {
-        if !memory.machine_is_due(&project.slug, &machine) {
+        let threads: Vec<thread::Thread> = remote_threads.iter().filter(|t| t.machine == machine).cloned().collect();
+        if !memory.machine_is_due(&project.slug, &machine, threads.iter().any(|t| starting_up(t, now))) {
             continue;
         }
-        let threads: Vec<thread::Thread> = remote_threads.iter().filter(|t| t.machine == machine).cloned().collect();
         let outcome = remote_pass(ctx, project, &herdr, &machine, &threads, &mut copy_notes, &mut errors);
         let event = memory.record_machine(&machine, outcome.as_ref().err().map(String::as_str), now);
         match outcome {
