@@ -25,6 +25,8 @@ const BRIEF_POLL: Duration = Duration::from_secs(2);
 /// How long after its start a thread on another machine is looked at between
 /// that machine's polls.
 const REMOTE_BRIEF_WINDOW_SECS: i64 = 300;
+/// How many agents one remote pass may start on one machine.
+pub const REMOTE_STARTS_PER_PASS: usize = 1;
 const STOP_WAIT: Duration = Duration::from_secs(60);
 const IDLE_EXIT: Duration = Duration::from_secs(300);
 const LOG_CAP: u64 = 1_000_000;
@@ -728,11 +730,11 @@ fn thread_pass(project: &Project, herdr: &Herdr, socket: &str, threads: &[thread
     Ok(pass)
 }
 
-/// Launches pending threads whose pane is at a shell prompt. At most one
-/// `agent start` per machine per tick (`may_start`), and never a start and a
-/// prompt for the same pane in one tick: prompts only go to agents that were
-/// already listed before any start.
-fn launch_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, threads: &[thread::Thread], agents: &[Agent], panes: &[Pane], may_start: &mut bool, errors: &mut Vec<anyhow::Error>) {
+/// Launches pending threads whose pane is at a shell prompt. At most
+/// `starts_left` `agent start` calls, and never a start and a prompt for the
+/// same pane in one tick: prompts only go to agents that were already listed
+/// before any start.
+fn launch_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, threads: &[thread::Thread], agents: &[Agent], panes: &[Pane], starts_left: &mut usize, errors: &mut Vec<anyhow::Error>) {
     let now = jiff::Timestamp::now();
     for t in threads {
         if t.status != thread::Status::Open || !t.prompt_pending {
@@ -750,10 +752,10 @@ fn launch_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, threads: &[thread::T
             errors.extend(failed.err());
             continue;
         }
-        if !*may_start {
+        if *starts_left == 0 {
             continue;
         }
-        *may_start = false;
+        *starts_left -= 1;
         let launched = (|| -> Result<()> {
             thread::update(project, &t.id, |t| {
                 t.launch_attempts += 1;
@@ -954,7 +956,8 @@ fn remote_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, machine: &str, threa
             }
         }
     }
-    launch_pass(ctx, project, herdr, threads, &agents, &panes, &mut true, errors);
+    let mut starts_left = REMOTE_STARTS_PER_PASS;
+    launch_pass(ctx, project, herdr, threads, &agents, &panes, &mut starts_left, errors);
     Ok(pass)
 }
 
@@ -965,7 +968,8 @@ fn tick_slow(ctx: &Ctx, project: &Project, seen: &Seen, memory: &mut Memory) -> 
     let mut copy_notes: std::collections::BTreeMap<String, Vec<String>> = Default::default();
     let herdr = Herdr::new(ctx.env.herdr_bin(), &seen.socket, ctx.runner);
     let now = jiff::Timestamp::now();
-    let mut may_start = true;
+    // One local start per tick.
+    let mut starts_left = 1;
     let mut transitions = seen.transitions.clone();
 
     // Local threads: copy home when the report changed, then launches.
@@ -990,7 +994,7 @@ fn tick_slow(ctx: &Ctx, project: &Project, seen: &Seen, memory: &mut Memory) -> 
             }
         }
     }
-    launch_pass(ctx, project, &herdr, &local, &seen.agents, &seen.panes, &mut may_start, &mut errors);
+    launch_pass(ctx, project, &herdr, &local, &seen.agents, &seen.panes, &mut starts_left, &mut errors);
 
     // Remote threads, one machine at a time, every fourth tick.
     let mut state = steps::load_state(project);
