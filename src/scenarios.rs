@@ -1573,8 +1573,10 @@ fn is_machine_call(cmd: &Cmd) -> bool {
     cmd.args.first().is_some_and(|a| a == "--machine")
 }
 
-#[test]
-fn local_threads_get_one_agent_start_per_tick_and_a_due_machine_several() {
+/// One tick with two local threads waiting for an agent, `on_box` on "box"
+/// (t-0001 among them) and one on "cube": every `agent start` by machine, and
+/// the launch attempts of the local, "box" and "cube" threads.
+fn launches_in_one_tick(on_box: usize) -> (Vec<String>, Vec<u32>, Vec<u32>, u32) {
     let (world, project) = remote_world();
     let world = World { runner: FakeRunner::new(), ..world };
     let home = world.home.path().to_string_lossy().into_owned();
@@ -1594,9 +1596,8 @@ fn local_threads_get_one_agent_start_per_tick_and_a_due_machine_several() {
         })
         .unwrap()
     };
-    // Two local threads, more on "box" than one pass starts, and one on "cube".
     let locals = [pending("", "w1"), pending("", "w1")];
-    let boxed: Vec<Thread> = (0..ticker::REMOTE_STARTS_PER_PASS).map(|i| pending("box", &format!("w{}", 4 + i))).collect();
+    let boxed: Vec<Thread> = (1..on_box).map(|i| pending("box", &format!("w{}", 3 + i))).collect();
     let cube = pending("cube", "w3");
     let local_panes = format!(r#"{{"result":{{"panes":[{},{}]}}}}"#, world.coordinator_pane(&project), pane_json("w1", "w1:t2", "w1:p2", &home));
     let mut remote: Vec<String> = vec![pane_json("w2", "w2:t1", "w2:p1", "/home/me/wt"), pane_json("w3", "w3:t2", "w3:p2", &home)];
@@ -1624,8 +1625,6 @@ fn local_threads_get_one_agent_start_per_tick_and_a_due_machine_several() {
     memory.tick = 1;
     ticker::tick_project_with(&ctx, &project, &mut memory).unwrap();
 
-    // One local start; each machine starts what waits, up to its cap in one
-    // pass. The second local and the last "box" thread wait for the next tick.
     let starts: Vec<String> = world
         .runner
         .calls
@@ -1634,12 +1633,31 @@ fn local_threads_get_one_agent_start_per_tick_and_a_due_machine_several() {
         .filter(|c| c.display().contains("agent start"))
         .map(|c| if is_machine_call(c) { c.args[1].clone() } else { "local".into() })
         .collect();
+    let attempts = |id: &str| thread::load(&project, id).unwrap().launch_attempts;
+    let on_box = ["t-0001"].into_iter().chain(boxed.iter().map(|t| t.id.as_str())).map(attempts).collect();
+    (starts, locals.iter().map(|t| attempts(&t.id)).collect(), on_box, attempts(&cube.id))
+}
+
+#[test]
+fn local_threads_get_one_agent_start_per_tick_and_a_due_machine_several() {
+    // More on "box" than one pass starts.
+    let (starts, locals, on_box, cube) = launches_in_one_tick(ticker::REMOTE_STARTS_PER_PASS + 1);
+    // One local start; each machine starts what waits, up to its cap in one
+    // pass. The second local and the last "box" thread wait for the next tick.
     let boxes = vec!["box"; ticker::REMOTE_STARTS_PER_PASS];
     assert_eq!(starts, [vec!["local"], boxes, vec!["cube"]].concat());
-    let attempts = |id: &str| thread::load(&project, id).unwrap().launch_attempts;
-    assert_eq!((attempts(&locals[0].id), attempts(&locals[1].id)), (1, 0));
-    assert_eq!(attempts(&cube.id), 1);
-    assert_eq!(attempts(&boxed.last().unwrap().id), 0);
+    assert_eq!(locals, [1, 0]);
+    assert_eq!(cube, 1);
+    assert_eq!(on_box.last(), Some(&0));
+}
+
+#[test]
+fn threads_started_together_on_one_machine_launch_in_the_same_pass() {
+    // A coordinator starting three threads at once waited a whole machine
+    // poll (about two minutes) for each thread after the first.
+    let (starts, _, on_box, _) = launches_in_one_tick(3);
+    assert_eq!(starts.iter().filter(|m| *m == "box").count(), 3);
+    assert_eq!(on_box, [1, 1, 1]);
 }
 
 #[test]

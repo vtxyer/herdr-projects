@@ -25,8 +25,11 @@ const BRIEF_POLL: Duration = Duration::from_secs(2);
 /// How long after its start a thread on another machine is looked at between
 /// that machine's polls.
 const REMOTE_BRIEF_WINDOW_SECS: i64 = 300;
-/// How many agents one remote pass may start on one machine.
-pub const REMOTE_STARTS_PER_PASS: usize = 1;
+/// How many agents one remote pass may start on one machine. More than one:
+/// threads started together would otherwise launch a whole machine poll
+/// apart. Bounded because each start may wait `AGENT_START_TIMEOUT` (20s)
+/// and the tick waits with it, for every project.
+pub const REMOTE_STARTS_PER_PASS: usize = 4;
 const STOP_WAIT: Duration = Duration::from_secs(60);
 const IDLE_EXIT: Duration = Duration::from_secs(300);
 const LOG_CAP: u64 = 1_000_000;
@@ -924,7 +927,7 @@ fn tick_cheap(ctx: &Ctx, project: &Project, sessions: &mut Sessions) -> Result<O
 /// One remote machine: one `agent list` (and `pane list`) through
 /// `herdr --machine`, one ssh call for every report hash, then the same thread
 /// pass, copies and launches as for local threads, with its own allowance of
-/// one start per tick. If the machine cannot be
+/// [`REMOTE_STARTS_PER_PASS`] starts. If the machine cannot be
 /// reached nothing is read: no state, no group change, no copy, no inbox item.
 fn remote_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, machine: &str, threads: &[thread::Thread], copy_notes: &mut std::collections::BTreeMap<String, Vec<String>>, errors: &mut Vec<anyhow::Error>) -> Result<Pass, String> {
     let remote = herdr.on_machine(machine);
