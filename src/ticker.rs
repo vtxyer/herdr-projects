@@ -844,12 +844,16 @@ fn launch_pass(ctx: &Ctx, project: &Project, herdr: &Herdr, threads: &[thread::T
     }
 }
 
-/// A thread being set up, or whose agent waits to be started or briefed,
-/// recently enough that it is not simply blocked: worth a look every tick.
+/// A thread being set up (which fails after five minutes), or whose agent
+/// waits to be started or briefed, recently enough that it is not simply
+/// blocked or gone: worth a look every tick.
 fn starting_up(t: &thread::Thread, now: jiff::Timestamp) -> bool {
     match t.status {
         thread::Status::Starting => true,
-        thread::Status::Open => t.prompt_pending && !t.brief_stuck && (t.launched_at.is_empty() || thread::seconds_since(&t.launched_at, now) < REMOTE_BRIEF_WINDOW_SECS),
+        thread::Status::Open => {
+            let since = if t.launched_at.is_empty() { &t.created } else { &t.launched_at };
+            t.prompt_pending && !t.brief_stuck && thread::seconds_since(since, now) < REMOTE_BRIEF_WINDOW_SECS
+        }
         _ => false,
     }
 }
@@ -1252,6 +1256,20 @@ mod tests {
         assert!(!tick_project(&ctx, &f.project).unwrap());
         assert!(runner.calls.borrow().iter().all(|c| !c.env.iter().any(|(_, v)| *v == gone)));
         assert_eq!(runner.count("agent list"), 0);
+    }
+
+    #[test]
+    fn a_thread_counts_as_starting_up_for_five_minutes_at_most() {
+        let now = jiff::Timestamp::now();
+        let ago = |secs: i64| (now - jiff::SignedDuration::from_secs(secs)).to_string();
+        let waiting = thread::Thread { status: thread::Status::Open, prompt_pending: true, created: ago(10), ..Default::default() };
+        assert!(starting_up(&waiting, now));
+        assert!(starting_up(&thread::Thread { launched_at: ago(10), created: ago(600), ..waiting.clone() }, now));
+        // Never launched (its pane went away, say) or launched long ago.
+        assert!(!starting_up(&thread::Thread { created: ago(600), ..waiting.clone() }, now));
+        assert!(!starting_up(&thread::Thread { launched_at: ago(600), ..waiting.clone() }, now));
+        assert!(!starting_up(&thread::Thread { prompt_pending: false, ..waiting.clone() }, now));
+        assert!(!starting_up(&thread::Thread { brief_stuck: true, ..waiting.clone() }, now));
     }
 
     #[test]
