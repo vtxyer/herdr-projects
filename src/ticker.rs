@@ -379,7 +379,9 @@ pub fn brief_pass(ctx: &Ctx, log: &Log) -> bool {
         let herdr = Herdr::new(ctx.env.herdr_bin(), &record.socket, ctx.runner);
         for t in &pending {
             let on = herdr.on_machine(&t.machine);
+            // Asked once per pass; a failed call is tried again next pass.
             let Some(agents) = lists.entry(format!("{}\n{}", record.socket, t.machine)).or_insert_with(|| on.agent_list().ok()) else {
+                waiting = true;
                 continue;
             };
             let Some(agent) = agents.iter().find(|a| thread::agent_matches(t, a)) else {

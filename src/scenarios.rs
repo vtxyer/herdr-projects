@@ -1799,6 +1799,46 @@ fn a_remote_pane_gets_its_tokens_again_only_when_they_change() {
     assert_eq!(remote_tokens(&scripted), 2, "a new group is a new rank");
 }
 
+/// A remote t-0001 whose agent was started `ago_secs` ago and waits for its
+/// brief; `box` answers `agent list` with `answer` (`None`: it fails).
+fn remote_brief_world(ago_secs: i64, answer: Rc<RefCell<Option<String>>>) -> (World, Project) {
+    let (world, project) = remote_world();
+    let launched = jiff::Timestamp::now() - jiff::SignedDuration::from_secs(ago_secs);
+    thread::update(&project, "t-0001", |t| {
+        t.prompt_pending = true;
+        t.launch_attempts = 1;
+        t.launched_at = launched.to_string();
+    })
+    .unwrap();
+    let scripted = World { runner: FakeRunner::new(), ..world };
+    scripted.runner.on_fn(
+        |cmd| is_machine_call(cmd) && cmd.display().contains("agent list"),
+        move |_| Ok(match answer.borrow().as_deref() {
+            Some(state) => ok(&format!(r#"{{"result":{{"agents":[{}]}}}}"#, agent_json("w2", "w2:t1", "w2:p1", "/home/me/wt", "hp-demo-t-0001", state))),
+            None => fail(255, "ssh: connect to host box: Operation timed out"),
+        }),
+    );
+    (scripted, project)
+}
+
+fn remote_agent_lists(world: &World) -> usize {
+    world.runner.calls.borrow().iter().filter(|c| is_machine_call(c) && c.display().contains("agent list")).count()
+}
+
+#[test]
+fn a_failed_look_at_a_remote_agent_keeps_the_brief_checks_going() {
+    let answer = Rc::new(RefCell::new(None));
+    let (world, project) = remote_brief_world(10, answer.clone());
+    let ctx = world.ctx();
+    // One failed ssh call is no reason to wait for the next machine poll.
+    assert!(ticker::brief_pass_for_test(&ctx));
+    assert_eq!(remote_agent_lists(&world), 1);
+    *answer.borrow_mut() = Some("working".into());
+    assert!(ticker::brief_pass_for_test(&ctx));
+    assert_eq!(remote_agent_lists(&world), 2);
+    assert!(thread::load(&project, "t-0001").unwrap().prompt_pending);
+}
+
 #[test]
 fn a_remote_thread_without_a_repo_is_refused() {
     let world = World::new();
