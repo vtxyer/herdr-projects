@@ -165,19 +165,24 @@ pub fn unmarked_homes(parts: &Parts, workspaces: &[Workspace]) -> Vec<(String, S
         .collect()
 }
 
-/// Tokens sent per `(kind, id)`, so an unchanged card is re-sent only to keep
-/// its TTL alive.
-#[derive(Default)]
-pub struct Sent(HashMap<(String, String), (Tokens, Instant)>);
+/// What was sent per `(kind, id)` (tokens by default), so an unchanged card
+/// is re-sent only to keep its TTL alive.
+pub struct Sent<V = Tokens>(HashMap<(String, String), (V, Instant)>);
+
+impl<V> Default for Sent<V> {
+    fn default() -> Self {
+        Sent(HashMap::new())
+    }
+}
 
 const RESEND: Duration = Duration::from_millis(crate::sidebar::TOKEN_TTL_MS / 3);
 
-impl Sent {
-    fn due(&mut self, key: (String, String), tokens: &Tokens) -> bool {
+impl<V: PartialEq + Clone> Sent<V> {
+    pub fn due(&mut self, key: (String, String), value: &V) -> bool {
         match self.0.get(&key) {
-            Some((last, at)) if last == tokens && at.elapsed() < RESEND => false,
+            Some((last, at)) if last == value && at.elapsed() < RESEND => false,
             _ => {
-                self.0.insert(key, (tokens.clone(), Instant::now()));
+                self.0.insert(key, (value.clone(), Instant::now()));
                 true
             }
         }
