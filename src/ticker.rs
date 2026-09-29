@@ -568,21 +568,23 @@ fn part(ctx: &Ctx, project: &Project, record: &project::Coordinator, coordinator
 }
 
 #[cfg(test)]
+fn test_log() -> Log {
+    Log { path: std::env::temp_dir().join(format!("hp-test-log-{}", std::process::id())) }
+}
+
+#[cfg(test)]
 pub fn tick_for_test(ctx: &Ctx, memory: &mut Memory) -> bool {
-    let dir = std::env::temp_dir().join(format!("hp-test-log-{}", std::process::id()));
-    tick(ctx, &Log { path: dir }, memory)
+    tick(ctx, &test_log(), memory)
 }
 
 #[cfg(test)]
 pub fn brief_pass_for_test(ctx: &Ctx) -> bool {
-    let dir = std::env::temp_dir().join(format!("hp-test-log-{}", std::process::id()));
-    brief_pass(ctx, &Log { path: dir }, false)
+    brief_pass(ctx, &test_log(), false)
 }
 
 #[cfg(test)]
 pub fn brief_pass_after_tick_for_test(ctx: &Ctx) -> bool {
-    let dir = std::env::temp_dir().join(format!("hp-test-log-{}", std::process::id()));
-    brief_pass(ctx, &Log { path: dir }, true)
+    brief_pass(ctx, &test_log(), true)
 }
 
 /// What the cheap pass saw, handed to the slow pass so herdr is asked once.
